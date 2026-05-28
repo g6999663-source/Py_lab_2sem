@@ -1,3 +1,6 @@
 pandas
+numpy
 pyyaml
 requests
+sqlalchemy
+psycopg2-binary
