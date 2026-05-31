@@ -1,99 +1,163 @@
-# Data Contract — variant_04 (Лондон, архив погоды)
+# Data Contract: Open‑Meteo Archive API → ETL → Mart → DQ (variant_04, London)
+
+## Версия контракта
+
+- **Версия:** 2.0
+- **Дата последнего обновления:** 2026-05-31
+- **Статус:** действует для всех слоёв (raw, normalized, mart, DQ)
+
+---
 
 ## 1. Источник данных
 
-| Параметр | Значение |
-|----------|----------|
-| **Название API** | Open-Meteo Archive API |
-| **Endpoint** | https://archive-api.open-meteo.com/v1/archive |
-| **Метод** | GET |
-| **Таймаут** | 15 секунд |
+| Свойство       | Значение                                      |
+|----------------|-----------------------------------------------|
+| **API**        | Open‑Meteo Historical Weather Archive         |
+| **Endpoint**   | `https://archive-api.open-meteo.com/v1/archive` |
+| **Метод**      | GET                                           |
+| **Аутентификация** | не требуется                              |
+| **Город**      | Лондон (Великобритания)                       |
+| **Координаты** | широта 51.5072, долгота -0.1276               |
+| **Часовой пояс** | Europe/London                              |
 
-## 2. Параметры запроса
+### Параметры запроса (из `configs/variant_04.yml`)
 
-| Параметр | Значение |
-|----------|----------|
-| latitude | 51.5072 |
-| longitude | -0.1276 |
-| timezone | Europe/London |
-| start_date | 2024-01-01 |
-| end_date | 2024-01-07 |
-| hourly | temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m |
+```yaml
+latitude: 51.5072
+longitude: -0.1276
+hourly: [temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m]
+timezone: Europe/London
+```
 
-## 3. Формат ответа
+---
 
-- **Тип:** JSON
-- **Часовые данные:** time, temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m
+## 2. Raw JSON (непосредственно от API)
 
-## 4. Обработка ошибок
+Пример структуры:
 
-- Таймаут (>15 сек) → ошибка
-- HTTP 400 → неверные даты
-- Не JSON → ошибка
+```json
+{
+  "hourly": {
+    "time": ["2024-01-01T00:00", "2024-01-01T01:00", ...],
+    "temperature_2m": [5.2, 4.8, ...],
+    "relative_humidity_2m": [87, 85, ...],
+    "precipitation": [0.0, 0.0, ...],
+    "wind_speed_10m": [12.3, 11.7, ...]
+  }
+}
+```
 
-## 5. Сохранение
+**Хранение:** `data/raw/variant_04/raw_YYYY-MM-DD.json`
 
-- **Путь:** `data/raw/variant_04/`
-- **Формат имени:** `{start_date}_{end_date}_{timestamp}.json`
-- ## 7. Normalized слой (после очистки)
+---
 
-**Зерно таблицы:** одна строка = один час (одна временная точка архива)
+## 3. Normalized dataset (почасовой слой)
 
-| Поле | Тип | Nullable | Описание |
-|------|-----|----------|-----------|
-| datetime_utc | datetime64[ns] | No | Временная метка (UTC) |
-| temp_c | float64 | No | Температура воздуха на высоте 2 м, °C |
-| rel_humidity_percent | float64 | No | Относительная влажность, % |
-| precip_mm | float64 | No | Осадки, мм |
-| wind_kmh | float64 | No | Скорость ветра на высоте 10 м, км/ч |
-| city | object (str) | No | Название города (London) |
-| variant_id | object (str) | No | Идентификатор варианта (04) |
+- **Гранулярность:** 1 строка = 1 час наблюдения
+- **Источник:** raw JSON → `src/transform/normalize.py`
+- **Файл:** `data/normalized/variant_04/hourly_data.csv`
 
-**Выполненные шаги очистки:**
-1. Преобразование `timestamp` из строки в тип `datetime`.
-2. Заполнение пропусков в `precipitation` нулями (если были).
-3. Удаление дубликатов строк (если были).
-4. Переименование колонок для удобства.
-5. Проверка диапазонов значений (выбросы не обнаружены).
-6. ## Week 4 — Mart (Группировки и агрегаты)
+### Схема normalized
 
-### Что сделано
-- normalized-данные (почасовые) агрегированы в дневную витрину
-- добавлен `city_id = 'GB_LON'` (из конфига variant_04.yml)
-- использован справочник `configs/cities.csv` (содержит city_id, city_name, country_code)
-- выполнен `LEFT JOIN` по `city_id`
-- проверено отсутствие many‑to‑many (число строк не изменилось)
-- рассчитаны KPI согласно варианту
+| поле                   | тип     | nullable | единица      | описание                          |
+|------------------------|---------|----------|--------------|-----------------------------------|
+| ts                     | datetime| no       | Europe/London| локальное время измерения         |
+| temperature_2m         | float   | no       | °C           | температура на высоте 2 м         |
+| relative_humidity_2m   | float   | no       | %            | относительная влажность           |
+| precipitation          | float   | no       | мм           | осадки                            |
+| wind_speed_10m         | float   | no       | км/ч         | скорость ветра на высоте 10 м     |
+| city_id                | string  | no       | –            | GB_LON                            |
 
-### Гранулярность
-Одна строка = один день (для Лондона)
+**Сортировка:** по `ts` (монотонно возрастает)
 
-### KPI витрины
-- `avg_temp_c` – средняя температура за день, °C
-- `max_temp_c` – максимальная температура за день, °C
-- `total_precip_mm` – сумма осадков за день, мм
-- `rainy_hours` – количество часов с осадками > 0
-- `max_wind_kmh` – максимальная скорость ветра за день, км/ч
+---
 
-*(дополнительно: топ‑5 дней по ветру – как пример использования витрины)*
+## 4. Mart dataset (суточная витрина)
 
-### Результат
-Витрина сохраняется в: `data/mart/variant_04/mart_daily_YYYY-MM-DD_HH-MM-SS.csv`
+- **Гранулярность:** 1 строка = 1 день × 1 город (Лондон)
+- **Источник:** normalized CSV → `src/transform/build_mart.py`
+- **Файл:** `data/mart/variant_04/daily_weather.csv`
+- **Таблица PostgreSQL:** `daily_weather`
 
-### Итог
-Собран полный pipeline:  
-`raw JSON (Open‑Meteo Archive)` → `normalized CSV (почасовой)` → `mart CSV (суточный)`
+### Схема mart
 
-### Схема витрины (mart)
+| поле          | тип    | nullable | единица | описание                       |
+|---------------|--------|----------|---------|--------------------------------|
+| date          | date   | no       | –       | календарная дата               |
+| avg_temp      | float  | no       | °C      | средняя температура за день    |
+| min_temp      | float  | no       | °C      | минимальная температура за день|
+| max_temp      | float  | no       | °C      | максимальная температура за день|
+| avg_humidity  | float  | no       | %       | средняя относительная влажность|
+| total_precip  | float  | no       | мм      | сумма осадков за день          |
+| avg_windspeed | float  | no       | км/ч    | средняя скорость ветра за день |
+| city_id       | string | no       | –       | GB_LON                         |
 
-| Поле | Тип | Описание |
-|------|-----|-----------|
-| date | object (date) | Дата (UTC) |
-| avg_temp_c | float64 | Средняя температура за день, °C |
-| max_temp_c | float64 | Максимальная температура за день, °C |
-| total_precip_mm | float64 | Сумма осадков, мм |
-| rainy_hours | int64 | Количество часов с осадками > 0 |
-| max_wind_kmh | float64 | Максимальная скорость ветра, км/ч |
-| city_id | object | Код города (GB_LON) |
-| city_name | object | Название города (Лондон) |
-| country_code | object | Код страны (GB) |
+### Бизнес-ключ
+
+`(date, city_id)` – уникальный идентификатор строки витрины.
+
+### Логика расчёта
+
+- `avg_temp` = среднее из `temperature_2m` за день
+- `min_temp` = минимум из `temperature_2m`
+- `max_temp` = максимум из `temperature_2m`
+- `avg_humidity` = среднее из `relative_humidity_2m`
+- `total_precip` = сумма `precipitation`
+- `avg_windspeed` = среднее из `wind_speed_10m`
+
+---
+
+## 5. Data Quality правила (8 неделя)
+
+| ID  | Правило                     | Слой   | Критичность | Детали                                      |
+|-----|-----------------------------|--------|-------------|---------------------------------------------|
+| DQ1 | Таблица не пустая           | mart   | FAIL        | Количество строк > 0                        |
+| DQ2 | Нет NULL в бизнес-ключе     | mart   | FAIL        | `date` и `city_id` не NULL                  |
+| DQ3 | Уникальность бизнес-ключа   | mart   | FAIL        | Нет дубликатов `(date, city_id)`            |
+| DQ4 | Диапазон температур         | mart   | FAIL        | `min_temp`, `avg_temp`, `max_temp` ∈ [-80, 60] °C |
+| DQ5 | Логика температур           | mart   | FAIL        | `min_temp` ≤ `avg_temp` ≤ `max_temp`        |
+| DQ6 | Неотрицательные осадки      | mart   | WARNING     | `total_precip` ≥ 0                          |
+| DQ7 | Диапазон влажности          | mart   | WARNING     | `avg_humidity` ∈ [0, 100]                   |
+| DQ8 | Неотрицательная скорость ветра | mart | WARNING  | `avg_windspeed` ≥ 0                         |
+| DQ9 | Сортировка дат              | mart   | WARNING     | Даты по возрастанию                         |
+| DQ10| Нет будущих дат             | mart   | WARNING     | `date` ≤ сегодня                            |
+
+**Отчёт:** `data/dq_report.json`
+
+---
+
+## 6. Идемпотентность и state
+
+- **Watermark:** `last_date` в `data/state/state.json`
+- **Полный режим (`--mode full`)** – пересоздаёт все слои, замена таблицы.
+- **Инкрементальный режим (`--mode incremental`)** – загружает только новые дни, избегает дублей.
+
+---
+
+## 7. Визуализация (неделя 7)
+
+Созданы три графика в `notebooks/week7_viz.ipynb`:
+
+1. Временной ряд температуры
+2. Распределение температур (гистограмма)
+3. Топ дней по осадкам (bar chart)
+
+**Артефакты:** `docs/figures/week7_*.png`
+
+---
+
+## 8. Unit-тесты (неделя 8)
+
+- **Фреймворк:** pytest
+- **Модуль тестов:** `tests/test_dq.py`
+- **Покрытие:** все DQ-правила (позитивные, негативные, граничные кейсы)
+- **Запуск:** `pytest tests/test_dq.py -v`
+
+---
+
+## Changelog
+
+| Версия | Дата       | Изменения                                      |
+|--------|------------|------------------------------------------------|
+| 1.0    | 2026-05-20 | Начальная версия (API, raw, normalized, mart)  |
+| 2.0    | 2026-05-31 | Добавлены DQ-правила, тестирование, визуализация, watermark |
