@@ -204,5 +204,136 @@ python src/load/load.py
 
 ### Результат
 Данные загружены в PostgreSQL, таблица: `mart_variant_04_daily`.
-
 SQL-запросы успешно выполняются, данные прошли базовые проверки качества.
+# Week 6 — ETL Pipeline (variant_04, London)
+
+## Что сделано
+
+- Объединены все этапы в единый pipeline (`src/pipeline/pipeline.py`)
+- Реализована единая команда запуска (`scripts/pipeline.bat`)
+- Добавлены режимы:
+  - `full`
+  - `incremental`
+- Устранён хардкод путей во всех слоях
+- Реализовано автоматическое связывание слоёв (raw → normalized → mart)
+- Добавлен `data/state/state.json` для хранения состояния пайплайна
+- Реализован watermark (по максимальной дате `last_date`)
+- Обеспечена идемпотентность пайплайна
+
+## Запуск pipeline
+
+Из корня проекта:
+
+```batch
+scripts\pipeline.bat --mode full
+scripts\pipeline.bat --mode incremental
+```
+
+Или напрямую:
+
+```bash
+python src/pipeline/pipeline.py --mode full
+python src/pipeline/pipeline.py --mode incremental
+```
+
+## Что происходит
+
+Pipeline выполняет следующие шаги:
+
+### 1. Extract (`extract_incremental.py`)
+
+- Получение данных из Open‑Meteo Archive API (Лондон, координаты из `configs/variant_04.yml`)
+- При `full` – загрузка всех дат из `date_range` (2024-01-01 … 2024-01-07)
+- При `incremental` – загрузка только новых дней, начиная с `state.last_date + 1`
+- Сохранение в `data/raw/variant_04/raw_YYYY-MM-DD.json`
+
+### 2. Transform – Normalize (`normalize.py`)
+
+- Читает все загруженные raw JSON
+- Преобразует `time` → `ts`, добавляет `city_id = GB_LON`
+- Сохраняет в `data/normalized/variant_04/hourly_data.csv`
+- При инкременте – дозаписывает новые строки, удаляя дубли по `(ts, city_id)`
+
+### 3. Transform – Mart (`build_mart.py`)
+
+- Читает полный `hourly_data.csv`
+- Агрегирует по дням:
+  - средняя / мин / макс температура
+  - сумма осадков
+  - средняя влажность и скорость ветра
+- Сохраняет в `data/mart/variant_04/daily_weather.csv` (всегда перезаписывает)
+
+### 4. Load (`load_incremental.py`)
+
+- Загружает `daily_weather.csv` в PostgreSQL (таблица `daily_weather`)
+- `full` → полная замена таблицы (`if_exists='replace'`)
+- `incremental` → добавление только тех строк, чьи даты ещё не присутствуют в таблице
+
+## State пайплайна
+
+**Файл**: `data/state/state.json`
+
+**Пример содержимого**:
+
+```json
+{"last_date": "2024-01-14"}
+```
+
+**Поля**:
+
+- `last_date` – максимальная дата, успешно извлечённая из API (watermark)
+
+**Обновление**: после каждого успешного извлечения дня.
+
+## Watermark
+
+- Используется поле: `date` (в mart и state)
+- Определяется как максимальная дата среди загруженных дней
+- При `incremental` стартовая дата = `watermark + 1`
+- Пример: `watermark = 2024-01-14`
+
+## Business key
+
+- Одна строка витрины = один день по одному городу
+- Business key: `date` + `city_id` (GB_LON)
+
+## Идемпотентность
+
+- Повторный запуск `--mode full` полностью пересоздаёт все слои и таблицу → результат одинаков
+- Повторный запуск `--mode incremental` без новых данных ничего не меняет (сообщение `No new data`)
+- При `incremental` с новыми данными старые строки не дублируются:
+  - в нормализованном CSV удаляются дубли по `(ts, city_id)`
+  - перед загрузкой в PostgreSQL отфильтровываются уже существующие даты
+
+## Режимы работы
+
+### Full
+
+- Извлекаются все даты из `date_range` (начало → конец)
+- Нормализованный CSV создаётся заново (если файл существует – перезаписывается)
+- Витрина полностью пересобирается
+- Таблица в БД заменяется (`replace`)
+
+### Incremental
+
+- Используется `state.json` для определения последней загруженной даты
+- Извлекаются только дни от `last_date + 1` до `date_range.end`
+- Нормализованный CSV дополняется новыми строками (без дублей)
+- Витрина перестраивается полностью (на основе всех накопленных данных)
+- В БД добавляются только те даты, которых ещё нет в таблице
+
+## Итог
+
+Собран полноценный ETL pipeline:
+
+```text
+API → raw JSON → normalized CSV → mart CSV → PostgreSQL (daily_weather)
+```
+
+**Свойства**:
+
+- единая точка входа
+- повторяемость
+- идемпотентность
+- поддержка incremental
+- хранение состояния (state + watermark)
