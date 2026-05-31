@@ -1,69 +1,103 @@
-# SQL-проверки качества данных (неделя 5)
+# SQL checks для таблицы `daily_weather` (variant_04, London)
 
-## 1. Количество строк
+## 1. Таблица не пустая
+
 ```sql
-SELECT COUNT(*) FROM mart_variant_04_daily;
+SELECT COUNT(*) AS row_count FROM daily_weather;
 ```
-Ожидается: 7 (или больше 0).
-## 2. Диапазон дат
-```sql
-SELECT MIN(date), MAX(date) FROM mart_variant_04_daily;
-```
-Ожидается: 2024-01-01 – 2024-01-07.
-## 3. NULL в ключевых колонках
-```sql
-SELECT 
-    SUM(CASE WHEN date IS NULL THEN 1 ELSE 0 END) AS null_date,
-    SUM(CASE WHEN city_id IS NULL THEN 1 ELSE 0 END) AS null_city,
-    SUM(CASE WHEN avg_temp_c IS NULL THEN 1 ELSE 0 END) AS null_temp
-FROM mart_variant_04_daily;
-```
-Ожидается: все нули.
-## 4. дубликаты по (date,city_id)
-```sql
-SELECT date, city_id, COUNT(*) 
-FROM mart_variant_04_daily 
-GROUP BY date, city_id 
-HAVING COUNT(*) > 1;
-```
-Ожидается: пустой результат.
-## 5. Отрицательные значения осадков
-```sql
-SELECT * FROM mart_variant_04_daily WHERE total_precip_mm < 0;
-```
-Ожидается: 0 строк.
+
+**Ожидается:** `> 0` (после `full` – 7, после `incremental` – 14).
 
 ---
 
-### 8. Выполнение SQL-проверок (через Python)
+## 2. Диапазон дат
 
-Добавьте блок проверок в конец `load.py` (перед финальным print) или создайте отдельный скрипт. Пример (можно вставить в `load.py` после загрузки):
+```sql
+SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM daily_weather;
+```
 
-```python
-with engine.connect() as conn:
-    # проверка 1
-    cnt = conn.execute(text(f"SELECT COUNT(*) FROM {TABLE_NAME}")).fetchone()[0]
-    print(f"Check 1 (count): {cnt}")
-    # проверка 2 – диапазон дат
-    min_max = conn.execute(text(f"SELECT MIN(date), MAX(date) FROM {TABLE_NAME}")).fetchone()
-    print(f"Check 2 (date range): {min_max[0]} to {min_max[1]}")
-    # проверка 3 – NULL
-    nulls = conn.execute(text(f"""
-        SELECT SUM(CASE WHEN date IS NULL THEN 1 ELSE 0 END),
-               SUM(CASE WHEN city_id IS NULL THEN 1 ELSE 0 END)
-        FROM {TABLE_NAME}
-    """)).fetchone()
-    print(f"Check 3 (NULLs): date={nulls[0]}, city_id={nulls[1]}")
-    # проверка 4 – дубликаты
-    dups = conn.execute(text(f"""
-        SELECT COUNT(*) FROM (
-            SELECT date, city_id, COUNT(*) 
-            FROM {TABLE_NAME} 
-            GROUP BY date, city_id 
-            HAVING COUNT(*) > 1
-        ) t
-    """)).fetchone()[0]
-    print(f"Check 4 (duplicates): {dups}")
-    # проверка 5 – отрицательные осадки
-    neg_precip = conn.execute(text(f"SELECT COUNT(*) FROM {TABLE_NAME} WHERE total_precip_mm < 0")).fetchone()[0]
-    print(f"Check 5 (negative precip): {neg_precip}")
+**Ожидается:** `2024-01-01` и `2024-01-07` (после расширения – `2024-01-14`).
+
+---
+
+## 3. NULL в ключевых колонках
+
+```sql
+SELECT COUNT(*) AS null_count FROM daily_weather
+WHERE date IS NULL OR city_id IS NULL;
+```
+
+**Ожидается:** `0`.
+
+---
+
+## 4. Дубликаты по бизнес-ключу `(date, city_id)`
+
+```sql
+SELECT date, city_id, COUNT(*) FROM daily_weather
+GROUP BY date, city_id
+HAVING COUNT(*) > 1;
+```
+
+**Ожидается:** пусто.
+
+---
+
+## 5. Диапазон температур (разумные пределы)
+
+```sql
+SELECT MIN(min_temp) AS global_min, MAX(max_temp) AS global_max FROM daily_weather;
+```
+
+**Ожидается:** для Лондона зимой примерно от `-5` до `+15`.
+
+---
+
+## 6. Логика `min ≤ avg ≤ max`
+
+```sql
+SELECT COUNT(*) AS violations FROM daily_weather
+WHERE min_temp > avg_temp OR avg_temp > max_temp;
+```
+
+**Ожидается:** `0`.
+
+---
+
+## 7. Неотрицательные осадки
+
+```sql
+SELECT COUNT(*) FROM daily_weather WHERE total_precip < 0;
+```
+
+**Ожидается:** `0`.
+
+---
+
+## 8. Влажность в диапазоне `[0, 100]`
+
+```sql
+SELECT COUNT(*) FROM daily_weather WHERE avg_humidity < 0 OR avg_humidity > 100;
+```
+
+**Ожидается:** `0`.
+
+---
+
+## 9. Скорость ветра неотрицательна
+
+```sql
+SELECT COUNT(*) FROM daily_weather WHERE avg_windspeed < 0;
+```
+
+**Ожидается:** `0`.
+
+---
+
+## 10. Идемпотентность (хеш до и после повторного инкремента)
+
+```sql
+SELECT MD5(STRING_AGG(CONCAT(date, city_id, avg_temp), ',' ORDER BY date)) FROM daily_weather;
+```
+
+**Ожидается:** хеш не должен меняться при повторном `--mode incremental` без новых данных.
