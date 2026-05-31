@@ -1,44 +1,97 @@
-# Implementation Plan — variant_04
 
-## 1. Краткое описание
-Извлечение архивных погодных данных (температура, влажность, осадки, ветер) для Лондона из Open-Meteo Archive API.
+---
 
-## 2. Цель
-- Получить raw JSON данные
-- Сохранить в `data/raw/variant_04/`
-- Подготовить основу для последующей трансформации
+### 2. `Implementation_Plan.md` (недели 1–8)
 
-## 3. Источник данных
-- **API:** https://archive-api.open-meteo.com/v1/archive
-- **Город:** Лондон (51.5072, -0.1276)
-- **Период:** 2024-01-01 по 2024-01-07
+```markdown
+# Implementation Plan – проект ETL (variant_04, London)
 
-## 4. План по неделям
+## Общая цель
+Построить воспроизводимый ETL-пайплайн:  
+`API → raw JSON → normalized CSV → mart CSV → PostgreSQL`  
+с поддержкой full/incremental загрузки, визуализацией, DQ-проверками и unit-тестами.
 
-| Неделя | Что сделано |
-|--------|-------------|
-| 1 | Структура проекта, настройка окружения, GitHub |
-| 2 | Extract скрипт, Data Contract, сохранение raw JSON |
-| 3 | Transform (очистка, нормализация) |
-| 4 | Data Quality проверки |
-| 5 | Загрузка в БД (Load) |
-| 6 | Ноутбук с аналитикой |
+---
 
-## 5. Риски
-- Лимиты API (нет официальных)
-- Изменение формата ответа API
-- ### Mart слой (витрина, неделя 4)
-- **Файлы:** `data/mart/variant_04/mart_daily_*.csv`
-- **Зерно:** один день
-- **Колонки:**
-    - `date` – дата (UTC)
-    - `avg_temp_c` – средняя температура за день, °C
-    - `max_temp_c` – максимальная температура за день, °C
-    - `total_precip_mm` – сумма осадков, мм
-    - `rainy_hours` – количество часов с осадками > 0
-    - `max_wind_kmh` – максимальная скорость ветра, км/ч
-    - `city_id` – код города (GB_LON)
-    - `city_name` – название города (Лондон)
-    - `country_code` – код страны (GB)
+## Неделя 1 – Настройка окружения и структура
+- [x] Установлен Anaconda, работает `base`
+- [x] Создан `scripts/setup_env.bat` для установки pandas
+- [x] Создан GitHub-репозиторий `python_labi`
+- [x] Базовая структура: `data/raw|normalized|mart`, `configs/`, `src/`, `notebooks/`, `scripts/`, `tests/`
 
-**Join** выполнен со справочником `configs/cities.csv` по полю `city_id`.
+---
+
+## Неделя 2 – HTTP и API (extract)
+- [x] Написан `src/extract/extract.py` с фиксированным периодом
+- [x] Добавлены `timeout`, обработка ошибок, логи
+- [x] Конфигурация в `configs/variant_04.yml` (Лондон)
+- [x] Raw JSON сохраняются в `data/raw/variant_04/raw_YYYY-MM-DD.json`
+
+---
+
+## Неделя 3 – Normalize (почасовой слой)
+- [x] Ноутбук `notebooks/week3_eda.ipynb` читает raw JSON
+- [x] Извлечён массив `hourly`, переименован `time` → `ts`
+- [x] Добавлен `city_id = GB_LON`
+- [x] Сохранение в `data/normalized/variant_04/hourly_data.csv`
+- [x] Проверены типы, пропуски, дубли
+
+---
+
+## Неделя 4 – Mart (суточная витрина)
+- [x] Ноутбук `notebooks/week4_mart.ipynb` читает normalized CSV
+- [x] Добавлено поле `date` из `ts`
+- [x] Агрегация по дням: средняя, мин, макс температура, сумма осадков, средняя влажность и ветер
+- [x] Сохранение в `data/mart/variant_04/daily_weather.csv`
+
+---
+
+## Неделя 5 – Загрузка в PostgreSQL
+- [x] Запущен Docker-контейнер `postgres_lab` (postgres:15-alpine)
+- [x] Создана БД `mydb`, пользователь `postgres`, пароль `mysecretpassword`
+- [x] Написан `src/load/load.py` для полной замены таблицы `daily_weather`
+- [x] Загрузка mart в PostgreSQL, проверка через `sql_checks.md`
+
+---
+
+## Неделя 6 – ETL pipeline (full/incremental, state)
+- [x] Создан `src/extract/extract_incremental.py` – поддержка `state.json`, извлечение по дням
+- [x] Создан `src/transform/normalize.py` – нормализация нескольких raw JSON, защита от дублей
+- [x] Создан `src/transform/build_mart.py` – полное перестроение витрины
+- [x] Создан `src/load/load_incremental.py` – загрузка с режимами `replace` / `append`
+- [x] Создан `src/pipeline/pipeline.py` – CLI с аргументом `--mode {full,incremental}`
+- [x] Создан `scripts/pipeline.bat` – обёртка с установкой `PYTHONPATH`
+- [x] Добавлен `data/state/state.json` для watermark (`last_date`)
+- [x] Проверена идемпотентность
+
+---
+
+## Неделя 7 – Визуализация (matplotlib, data storytelling)
+- [x] Создан ноутбук `notebooks/week7_viz.ipynb`
+- [x] Загружен mart-файл, проверен тип `date`
+- [x] Построены 3 графика:
+  - временной ряд температуры (line plot)
+  - распределение температур (гистограмма)
+  - топ-5 дней по осадкам (bar chart)
+- [x] Оформлены подписи осей, заголовки, единицы измерения
+- [x] Сформулированы выводы (минимум 3)
+- [x] Сохранены PNG в `docs/figures/`
+
+---
+
+## Неделя 8 – Data Quality и тестирование
+- [x] Создан модуль `src/dq.py` с 10 проверками (6 FAIL, 4 WARNING)
+- [x] Проверки: пустая таблица, NULL в ключе, дубли, диапазон температур, логика min≤avg≤max, осадки, влажность, ветер, сортировка, будущие даты
+- [x] Результаты сохраняются в `data/dq_report.json`
+- [x] Написаны unit-тесты в `tests/test_dq.py` (позитивные, негативные, граничные)
+- [x] Тесты запускаются через pytest
+- [x] Демонстрация срабатывания проверок на искусственно сломанных данных
+
+---
+
+## Текущий статус
+**Завершены недели 1–8.**  
+Пайплайн готов:  
+`API → raw → normalized → mart → PostgreSQL → DQ → визуализация → тесты`
+
+Дальнейшие недели (9–14) – по желанию (data governance, Docker Compose, Airflow, ML-аналитика).
